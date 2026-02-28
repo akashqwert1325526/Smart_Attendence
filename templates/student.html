@@ -4,9 +4,10 @@
 
 <div class="container">
     <p style="margin-top:0;">Reference photos folder: <code>faces/students/&lt;student_name&gt;/</code></p>
-    <form method="POST">
+    <form method="POST" enctype="multipart/form-data">
         <input type="text" name="student_name" placeholder="Enter Name (same as folder)" required><br>
         <input type="text" name="token" placeholder="Enter QR Token" required><br>
+        <input type="file" name="face_photo" accept="image/*" capture="user" required><br>
 
         <input type="hidden" name="lat" id="lat">
         <input type="hidden" name="lon" id="lon">

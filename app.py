@@ -18,6 +18,7 @@ CLASS_LON = 77.7110380
 ALLOWED_RADIUS = 0.5  # 500 meters (distance is in KM)
 QR_EXPIRY_MINUTES = 2
 STUDENT_FACES_DIR = os.path.join("faces", "students")
+ALLOWED_UPLOAD_EXTENSIONS = (".jpg", ".jpeg", ".png")
 
 
 def init_db():
@@ -181,6 +182,32 @@ def verify_with_student_gallery(captured_path, student_name):
     return False, f"matched {matches}/{len(refs)} (required {required})"
 
 
+def save_uploaded_face(file_storage):
+    if not file_storage or not file_storage.filename:
+        return None, "Capture or upload a face photo"
+
+    ext = os.path.splitext(file_storage.filename)[1].lower()
+    if ext not in ALLOWED_UPLOAD_EXTENSIONS:
+        return None, "Only .jpg, .jpeg, and .png are allowed"
+
+    os.makedirs("faces", exist_ok=True)
+    captured_path = os.path.join("faces", f"captured_{uuid.uuid4().hex}{ext}")
+    file_storage.save(captured_path)
+
+    if not os.path.exists(captured_path) or os.path.getsize(captured_path) == 0:
+        return None, "Could not save captured face image"
+
+    return captured_path, None
+
+
+def safe_remove(path):
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
 @app.route("/")
 def home():
     return render_template("index.html")
@@ -292,6 +319,7 @@ def student():
         name = request.form["student_name"].strip()
         lat = float(request.form["lat"])
         lon = float(request.form["lon"])
+        uploaded_face = request.files.get("face_photo")
 
         conn = sqlite3.connect("attendance.db")
         cursor = conn.cursor()
@@ -300,33 +328,28 @@ def student():
         result = cursor.fetchone()
 
         if not result:
+            conn.close()
             return render_template("result.html", message="Invalid QR Token", status="error")
 
         expiry_time = datetime.datetime.strptime(result[0], "%Y-%m-%d %H:%M:%S.%f")
         if datetime.datetime.now() > expiry_time:
+            conn.close()
             return render_template("result.html", message="QR Expired", status="error")
 
         distance = calculate_distance(CLASS_LAT, CLASS_LON, lat, lon)
         if distance > ALLOWED_RADIUS:
+            conn.close()
             return render_template("result.html", message="Outside Classroom", status="error")
 
-        cam = cv2.VideoCapture(0)
-        ret, frame = cam.read()
-        cam.release()
-
-        if not ret:
-            return render_template("result.html", message="Camera Error", status="error")
-
-        if not os.path.exists("faces"):
-            os.makedirs("faces")
-
-        captured_path = "faces/captured.jpg"
-        saved = cv2.imwrite(captured_path, frame)
-        if not saved:
-            return render_template("result.html", message="Could not save captured face image", status="error")
+        captured_path, upload_error = save_uploaded_face(uploaded_face)
+        if upload_error:
+            conn.close()
+            return render_template("result.html", message=upload_error, status="error")
 
         matched, info = verify_with_student_gallery(captured_path, name)
         if not matched:
+            conn.close()
+            safe_remove(captured_path)
             return render_template("result.html", message=f"Face Not Matched ({info})", status="error")
 
         # Prevent duplicate marking for the same student in the same QR session.
@@ -336,6 +359,7 @@ def student():
         )
         if cursor.fetchone():
             conn.close()
+            safe_remove(captured_path)
             return render_template(
                 "result.html",
                 message="Attendance already marked for this session",
@@ -349,6 +373,7 @@ def student():
         )
         conn.commit()
         conn.close()
+        safe_remove(captured_path)
 
         return render_template("result.html", message="Attendance Marked Successfully", status="success")
 
