@@ -1,0 +1,35 @@
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+
+<div class="navbar">Student Attendance</div>
+
+<div class="container">
+    <p style="margin-top:0;">Reference photos folder: <code>faces/students/&lt;student_name&gt;/</code></p>
+    <form method="POST">
+        <input type="text" name="student_name" placeholder="Enter Name (same as folder)" required><br>
+        <input type="text" name="token" placeholder="Enter QR Token" required><br>
+
+        <input type="hidden" name="lat" id="lat">
+        <input type="hidden" name="lon" id="lon">
+
+        <button class="btn" type="submit">Submit Attendance</button>
+    </form>
+    <br>
+    <a href="/" class="btn">Back</a>
+</div>
+
+<script>
+navigator.geolocation.getCurrentPosition(function(position){
+    document.getElementById("lat").value=position.coords.latitude;
+    document.getElementById("lon").value=position.coords.longitude;
+});
+
+const attendanceForm = document.querySelector("form");
+attendanceForm.addEventListener("submit", function() {
+    const submitButton = attendanceForm.querySelector('button[type="submit"]');
+    submitButton.disabled = true;
+    submitButton.textContent = "Submitting...";
+});
+</script>
+
+<footer class="site-footer">&copy; AGR. All rights reserved.</footer>
+

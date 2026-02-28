@@ -1,0 +1,24 @@
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<div class="container">
+    <h3>QR Generated</h3>
+    <img src="/static/qr.png" width="200">
+    <p>Expires in: <span id="timer">120</span> seconds</p>
+    <a href="/teacher" class="btn">Back to Teacher Portal</a>
+</div>
+
+<script>
+let timeLeft = 120;
+let timer = document.getElementById("timer");
+
+let countdown = setInterval(function(){
+    timeLeft--;
+    timer.innerText = timeLeft;
+    if(timeLeft <= 0){
+        clearInterval(countdown);
+        timer.innerText = "Expired";
+    }
+},1000);
+</script>
+
+<footer class="site-footer">&copy; AGR. All rights reserved.</footer>
+

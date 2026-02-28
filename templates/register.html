@@ -1,0 +1,19 @@
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+
+<div class="container">
+    <h2>Register Student Photos</h2>
+    <p>Upload multiple reference images for one student.</p>
+
+    <form method="POST" enctype="multipart/form-data">
+        <input type="text" name="student_name" placeholder="Enter Student Name" required><br>
+        <input type="file" name="photos" accept=".jpg,.jpeg,.png" multiple required><br>
+        <button class="btn" type="submit">Upload Photos</button>
+    </form>
+
+    <p>Saved to: <code>faces/students/&lt;student_name&gt;/</code></p>
+    <a href="/students" class="btn">Manage Students</a>
+    <a href="/" class="btn">Back Home</a>
+</div>
+
+<footer class="site-footer">&copy; AGR. All rights reserved.</footer>
+

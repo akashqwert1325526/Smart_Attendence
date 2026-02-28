@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Attendance Result</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="container">
+    {% if status == "success" %}
+        <div class="success-checkmark">&#10004;</div>
+        <h2>{{ message }}</h2>
+    {% else %}
+        <h2 style="color:#ffb4b4;">{{ message }}</h2>
+    {% endif %}
+
+    <a href="/student" class="btn">Try Again</a>
+    <a href="/" class="btn">Home</a>
+</div>
+
+<footer class="site-footer">&copy; AGR. All rights reserved.</footer>
+
+</body>
+</html>
+
+

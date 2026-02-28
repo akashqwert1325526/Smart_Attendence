@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Attendance Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+
+<body>
+
+<div class="navbar">
+    Attendance Dashboard
+    <a href="/" class="btn small-btn">Home</a>
+</div>
+
+<div class="container glass">
+    <h2>Attendance Chart</h2>
+    <canvas id="chart"></canvas>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<script>
+const rows = {{ data | tojson }};
+const labels = rows.map((row) => row[0]);
+const counts = rows.map((row) => row[1]);
+const ctx = document.getElementById("chart");
+
+if (labels.length === 0) {
+  ctx.replaceWith(document.createTextNode("No attendance data available yet."));
+} else {
+  new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels: labels,
+      datasets: [{
+        label: "Attendance Count",
+        data: counts
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { labels: { color: "white" } }
+      },
+      scales: {
+        x: { ticks: { color: "white" } },
+        y: { ticks: { color: "white" } }
+      }
+    }
+  });
+}
+</script>
+
+<footer class="site-footer">&copy; AGR. All rights reserved.</footer>
+
+</body>
+</html>
+
+

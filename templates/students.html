@@ -1,0 +1,39 @@
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+
+<div class="container" style="max-width: 760px;">
+    <h2>Registered Students</h2>
+
+    {% if students %}
+    <table style="width:100%; border-collapse: collapse; margin-top: 15px;">
+        <thead>
+            <tr>
+                <th style="text-align:left; padding:10px; border-bottom:1px solid rgba(255,255,255,0.3);">Student Folder</th>
+                <th style="text-align:left; padding:10px; border-bottom:1px solid rgba(255,255,255,0.3);">Photos</th>
+                <th style="text-align:left; padding:10px; border-bottom:1px solid rgba(255,255,255,0.3);">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for s in students %}
+            <tr>
+                <td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.15);">{{ s.key }}</td>
+                <td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.15);">{{ s.photo_count }}</td>
+                <td style="padding:10px; border-bottom:1px solid rgba(255,255,255,0.15);">
+                    <form method="POST" action="/students/delete" style="display:inline;">
+                        <input type="hidden" name="student_folder" value="{{ s.key }}">
+                        <button class="btn" type="submit" onclick="return confirm('Delete all photos for {{ s.key }}?')">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No students registered yet.</p>
+    {% endif %}
+
+    <a href="/register" class="btn">Register More</a>
+    <a href="/" class="btn">Back Home</a>
+</div>
+
+<footer class="site-footer">&copy; AGR. All rights reserved.</footer>
+

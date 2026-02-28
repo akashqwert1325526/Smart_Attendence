@@ -1,0 +1,14 @@
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<div class="container">
+{% if status == "success" %}
+    <div class="success-checkmark">✔</div>
+    <h2>{{ message }}</h2>
+{% else %}
+    <h2 style="color:red;">{{ message }}</h2>
+{% endif %}
+<br>
+<a href="/" class="btn">Back</a>
+</div>
+
+<footer class="site-footer">&copy; AGR. All rights reserved.</footer>
+
