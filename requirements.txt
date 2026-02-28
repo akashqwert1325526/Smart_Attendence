@@ -1,5 +1,0 @@
-flask==3.1.2
-qrcode==8.2
-opencv-python-headless==4.12.0.88
-deepface==0.0.95
-gunicorn==23.0.0
