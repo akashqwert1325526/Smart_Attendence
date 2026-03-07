@@ -1,20 +1,22 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 
 <div class="container home-shell">
-    <p class="eyebrow">SMARTATTENDANCE</p>
+    <p class="hero-kicker">Attendance Control Center</p>
     <h1 class="hero-title">Smart Attendance System</h1>
-    <p class="hero-sub">QR + Face Attendance</p>
+    <p class="hero-sub">Secure attendance with face match, QR sessions, and campus-based location validation.</p>
 
     <div class="portal-split">
-        <section class="portal-card">
+        <section class="portal-card portal-card-teacher">
             <h3>Teacher Portal</h3>
+            <p class="portal-note">Create sessions, manage students, set campus radius and review attendance.</p>
             <div class="actions-grid">
                 <a href="/teacher" class="btn card-btn">Open Teacher Portal</a>
             </div>
         </section>
 
-        <section class="portal-card">
+        <section class="portal-card portal-card-student">
             <h3>Student Portal</h3>
+            <p class="portal-note">Capture face, confirm live location, and mark attendance for the active class.</p>
             <div class="actions-grid">
                 <a href="/student" class="btn card-btn">Mark Attendance</a>
             </div>

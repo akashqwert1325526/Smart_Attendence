@@ -7,10 +7,12 @@
 <body>
 <div class="container">
     {% if status == "success" %}
+        <span class="status-chip status-chip-present">Present</span>
         <div class="success-checkmark">&#10004;</div>
-        <h2>{{ message }}</h2>
+        <h2 class="status-text-present">{{ message }}</h2>
     {% else %}
-        <h2 style="color:#ffb4b4;">{{ message }}</h2>
+        <span class="status-chip status-chip-absent">Absent</span>
+        <h2 class="status-text-absent">{{ message }}</h2>
     {% endif %}
 
     <a href="/student" class="btn">Try Again</a>

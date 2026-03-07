@@ -1,0 +1,175 @@
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+
+<div class="container">
+    <h3>Campus Location Setup</h3>
+    <p>Select your college location on Google Maps. This will be used for attendance geofence checks.</p>
+
+    <form method="POST" id="locationForm">
+        <input
+            type="text"
+            name="campus_name"
+            id="campus_name"
+            placeholder="Campus Name"
+            value="{{ settings.campus_name }}"
+            required
+        >
+        <input
+            type="text"
+            name="subject_name"
+            id="subject_name"
+            placeholder="Subject Name"
+            value="{{ settings.subject_name }}"
+            required
+        >
+        <input
+            type="number"
+            name="allowed_radius"
+            id="allowed_radius"
+            placeholder="Allowed Radius (km)"
+            min="0.1"
+            max="10"
+            step="0.1"
+            value="{{ settings.allowed_radius }}"
+            required
+        >
+        <input
+            type="number"
+            name="class_lat"
+            id="class_lat"
+            placeholder="Latitude"
+            step="any"
+            value="{{ settings.class_lat }}"
+            required
+        >
+        <input
+            type="number"
+            name="class_lon"
+            id="class_lon"
+            placeholder="Longitude"
+            step="any"
+            value="{{ settings.class_lon }}"
+            required
+        >
+
+        {% if google_maps_api_key %}
+        <input type="text" id="mapSearch" placeholder="Search college/place on map">
+        <div class="map-help">Tip: search a place, or click directly on map to set the location pin.</div>
+        <div id="campusMap" class="map-box"></div>
+        <p class="map-coords">
+            Selected coordinates:
+            <span id="selectedCoords">{{ "%.6f"|format(settings.class_lat) }}, {{ "%.6f"|format(settings.class_lon) }}</span>
+        </p>
+        <button type="button" class="btn" id="useCurrentBtn">Use My Current Location</button>
+        {% else %}
+        <button type="button" class="btn" id="useCurrentBtn">Use My Current Location</button>
+        {% endif %}
+
+        <button class="btn" type="submit">Save Campus Location</button>
+    </form>
+
+    <a href="/teacher" class="btn">Back</a>
+</div>
+
+{% if google_maps_api_key %}
+<script>
+let map;
+let marker;
+let autocomplete;
+
+const latInput = document.getElementById("class_lat");
+const lonInput = document.getElementById("class_lon");
+const coordsText = document.getElementById("selectedCoords");
+const useCurrentBtn = document.getElementById("useCurrentBtn");
+const form = document.getElementById("locationForm");
+
+function updateSelection(lat, lon) {
+    const position = { lat, lng: lon };
+    marker.setPosition(position);
+    map.panTo(position);
+    latInput.value = lat.toFixed(8);
+    lonInput.value = lon.toFixed(8);
+    coordsText.textContent = lat.toFixed(6) + ", " + lon.toFixed(6);
+}
+
+function initMap() {
+    const startLat = parseFloat(latInput.value) || 12.9690516;
+    const startLon = parseFloat(lonInput.value) || 77.7110380;
+    const startPos = { lat: startLat, lng: startLon };
+
+    map = new google.maps.Map(document.getElementById("campusMap"), {
+        center: startPos,
+        zoom: 16
+    });
+
+    marker = new google.maps.Marker({
+        position: startPos,
+        map,
+        draggable: true
+    });
+
+    map.addListener("click", function(event) {
+        updateSelection(event.latLng.lat(), event.latLng.lng());
+    });
+
+    marker.addListener("dragend", function(event) {
+        updateSelection(event.latLng.lat(), event.latLng.lng());
+    });
+
+    const input = document.getElementById("mapSearch");
+    autocomplete = new google.maps.places.Autocomplete(input);
+    autocomplete.bindTo("bounds", map);
+    autocomplete.addListener("place_changed", function() {
+        const place = autocomplete.getPlace();
+        if (!place.geometry || !place.geometry.location) {
+            return;
+        }
+        updateSelection(place.geometry.location.lat(), place.geometry.location.lng());
+        map.setZoom(17);
+    });
+}
+
+useCurrentBtn.addEventListener("click", function() {
+    if (!navigator.geolocation) {
+        return;
+    }
+    navigator.geolocation.getCurrentPosition(function(position) {
+        updateSelection(position.coords.latitude, position.coords.longitude);
+    });
+});
+
+form.addEventListener("submit", function(event) {
+    if (!latInput.value || !lonInput.value) {
+        event.preventDefault();
+        alert("Please select a location on the map before saving.");
+    }
+});
+</script>
+<script src="https://maps.googleapis.com/maps/api/js?key={{ google_maps_api_key }}&libraries=places&callback=initMap" async defer></script>
+{% endif %}
+
+{% if not google_maps_api_key %}
+<script>
+const useCurrentBtn = document.getElementById("useCurrentBtn");
+const latInput = document.getElementById("class_lat");
+const lonInput = document.getElementById("class_lon");
+
+useCurrentBtn.addEventListener("click", function() {
+    if (!navigator.geolocation) {
+        alert("Geolocation is not supported in this browser.");
+        return;
+    }
+    navigator.geolocation.getCurrentPosition(
+        function(position) {
+            latInput.value = position.coords.latitude.toFixed(8);
+            lonInput.value = position.coords.longitude.toFixed(8);
+        },
+        function() {
+            alert("Could not fetch location. Allow location permission and try again.");
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
+});
+</script>
+{% endif %}
+
+<footer class="site-footer">&copy; AGR. All rights reserved.</footer>

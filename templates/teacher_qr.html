@@ -2,6 +2,9 @@
 <div class="container">
     <h3>QR Generated</h3>
     <img src="/static/qr.png" width="200">
+    <p>Campus: <strong>{{ settings.campus_name }}</strong></p>
+    <p>Subject: <strong>{{ settings.subject_name }}</strong></p>
+    <p>Allowed radius: <strong>{{ "%.2f"|format(settings.allowed_radius) }} km</strong></p>
     <p>Expires in: <span id="timer">120</span> seconds</p>
     <a href="/teacher" class="btn">Back to Teacher Portal</a>
 </div>

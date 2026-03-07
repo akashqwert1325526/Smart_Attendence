@@ -7,18 +7,29 @@ import math
 import os
 import re
 import shutil
+import base64
 import cv2
 from deepface import DeepFace
 
 app = Flask(__name__)
 
 # CONFIG
-CLASS_LAT = 12.96905169
-CLASS_LON = 77.7110380
-ALLOWED_RADIUS = 0.5  # 500 meters (distance is in KM)
+DEFAULT_CLASS_LAT = 12.9690516
+DEFAULT_CLASS_LON = 77.7110380
+DEFAULT_ALLOWED_RADIUS = 0.5  # 500 meters (distance is in KM)
+DEFAULT_CAMPUS_NAME = "Main Campus"
+DEFAULT_SUBJECT_NAME = "General"
+GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "")
 QR_EXPIRY_MINUTES = 2
 STUDENT_FACES_DIR = os.path.join("faces", "students")
 ALLOWED_UPLOAD_EXTENSIONS = (".jpg", ".jpeg", ".png")
+DEEPFACE_MODEL_NAME = "Facenet512"
+DEEPFACE_DETECTOR = "retinaface"
+DEEPFACE_DISTANCE_METRIC = "cosine"
+STRICT_MAX_DISTANCE = 0.24
+MIN_REFERENCE_PHOTOS = 2
+EMBEDDING_MATCH_THRESHOLD = 0.26
+EMBEDDING_MARGIN = 0.06
 
 
 def init_db():
@@ -50,6 +61,46 @@ def init_db():
     attendance_columns = {row[1] for row in cursor.fetchall()}
     if "session_token" not in attendance_columns:
         cursor.execute("ALTER TABLE attendance ADD COLUMN session_token TEXT")
+    if "subject_name" not in attendance_columns:
+        cursor.execute("ALTER TABLE attendance ADD COLUMN subject_name TEXT")
+
+    cursor.execute(
+        """
+    CREATE TABLE IF NOT EXISTS location_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        campus_name TEXT NOT NULL,
+        subject_name TEXT NOT NULL,
+        class_lat REAL NOT NULL,
+        class_lon REAL NOT NULL,
+        allowed_radius REAL NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """
+    )
+
+    cursor.execute("SELECT id FROM location_settings WHERE id=1")
+    if not cursor.fetchone():
+        cursor.execute(
+            """
+            INSERT INTO location_settings (id, campus_name, subject_name, class_lat, class_lon, allowed_radius, updated_at)
+            VALUES (1, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                DEFAULT_CAMPUS_NAME,
+                DEFAULT_SUBJECT_NAME,
+                DEFAULT_CLASS_LAT,
+                DEFAULT_CLASS_LON,
+                DEFAULT_ALLOWED_RADIUS,
+                str(datetime.datetime.now()),
+            ),
+        )
+    else:
+        cursor.execute("PRAGMA table_info(location_settings)")
+        location_columns = {row[1] for row in cursor.fetchall()}
+        if "subject_name" not in location_columns:
+            cursor.execute(
+                f"ALTER TABLE location_settings ADD COLUMN subject_name TEXT NOT NULL DEFAULT '{DEFAULT_SUBJECT_NAME}'"
+            )
 
     conn.commit()
     conn.close()
@@ -74,15 +125,82 @@ def calculate_distance(lat1, lon1, lat2, lon2):
     return R * c
 
 
+def get_location_settings():
+    conn = sqlite3.connect("attendance.db")
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT campus_name, subject_name, class_lat, class_lon, allowed_radius FROM location_settings WHERE id=1"
+    )
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        return {
+            "campus_name": DEFAULT_CAMPUS_NAME,
+            "subject_name": DEFAULT_SUBJECT_NAME,
+            "class_lat": DEFAULT_CLASS_LAT,
+            "class_lon": DEFAULT_CLASS_LON,
+            "allowed_radius": DEFAULT_ALLOWED_RADIUS,
+        }
+
+    return {
+        "campus_name": row[0],
+        "subject_name": row[1],
+        "class_lat": float(row[2]),
+        "class_lon": float(row[3]),
+        "allowed_radius": float(row[4]),
+    }
+
+
+def save_location_settings(campus_name, subject_name, class_lat, class_lon, allowed_radius):
+    safe_name = campus_name.strip() or DEFAULT_CAMPUS_NAME
+    safe_subject = subject_name.strip() or DEFAULT_SUBJECT_NAME
+    conn = sqlite3.connect("attendance.db")
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE location_settings
+        SET campus_name=?, subject_name=?, class_lat=?, class_lon=?, allowed_radius=?, updated_at=?
+        WHERE id=1
+        """,
+        (
+            safe_name,
+            safe_subject,
+            class_lat,
+            class_lon,
+            allowed_radius,
+            str(datetime.datetime.now()),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
 def _extract_face(gray_img):
     cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
     cascade = cv2.CascadeClassifier(cascade_path)
-    faces = cascade.detectMultiScale(gray_img, scaleFactor=1.1, minNeighbors=5, minSize=(80, 80))
+    faces = cascade.detectMultiScale(gray_img, scaleFactor=1.1, minNeighbors=4, minSize=(40, 40))
     if len(faces) == 0:
-        return gray_img
+        # Fallback to center crop when detector misses due distance/lighting.
+        h, w = gray_img.shape[:2]
+        side = int(min(h, w) * 0.7)
+        y1 = max(0, (h - side) // 2)
+        x1 = max(0, (w - side) // 2)
+        return gray_img[y1 : y1 + side, x1 : x1 + side]
 
     x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
     return gray_img[y : y + h, x : x + w]
+
+
+def count_faces_in_image(img_path):
+    img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        return 0
+
+    cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    cascade = cv2.CascadeClassifier(cascade_path)
+    faces = cascade.detectMultiScale(img, scaleFactor=1.1, minNeighbors=4, minSize=(40, 40))
+    return len(faces)
 
 
 def _preprocess_for_compare(img_path):
@@ -125,7 +243,8 @@ def verify_face_fallback(captured_path, stored_path):
     hist_score = max(0.0, min(1.0, (hist_corr + 1) / 2))
 
     score = 0.7 * orb_ratio + 0.3 * hist_score
-    return score >= 0.18, f"score={score:.2f}, orb={orb_ratio:.2f}, hist={hist_score:.2f}"
+    matched = score >= 0.32 and orb_ratio >= 0.20 and hist_score >= 0.55
+    return matched, f"score={score:.2f}, orb={orb_ratio:.2f}, hist={hist_score:.2f}"
 
 
 def student_key(student_name):
@@ -146,20 +265,123 @@ def get_student_reference_images(student_name):
     return images, folder
 
 
+def _cosine_distance(vec1, vec2):
+    dot = sum(a * b for a, b in zip(vec1, vec2))
+    n1 = math.sqrt(sum(a * a for a in vec1))
+    n2 = math.sqrt(sum(b * b for b in vec2))
+    if n1 == 0 or n2 == 0:
+        return 1.0
+    cosine_sim = dot / (n1 * n2)
+    cosine_sim = max(-1.0, min(1.0, cosine_sim))
+    return 1.0 - cosine_sim
+
+
+def get_face_embedding(img_path):
+    try:
+        reps = DeepFace.represent(
+            img_path=img_path,
+            model_name=DEEPFACE_MODEL_NAME,
+            detector_backend=DEEPFACE_DETECTOR,
+            enforce_detection=True,
+        )
+    except Exception:
+        return None
+
+    if isinstance(reps, list) and reps:
+        emb = reps[0].get("embedding")
+        if isinstance(emb, list) and emb:
+            return emb
+    return None
+
+
+def get_other_students_reference_images(student_name):
+    claimed_key = student_key(student_name)
+    if not os.path.isdir(STUDENT_FACES_DIR):
+        return []
+
+    images = []
+    for folder_name in sorted(os.listdir(STUDENT_FACES_DIR)):
+        folder_path = os.path.join(STUDENT_FACES_DIR, folder_name)
+        if not os.path.isdir(folder_path) or folder_name == claimed_key:
+            continue
+        for file_name in sorted(os.listdir(folder_path)):
+            if file_name.lower().endswith((".jpg", ".jpeg", ".png")):
+                images.append(os.path.join(folder_path, file_name))
+    return images
+
+
+def verify_identity_separation(captured_path, student_name, claimed_refs):
+    captured_emb = get_face_embedding(captured_path)
+    if captured_emb is None:
+        return True, "separation_skipped_no_capture_embedding"
+
+    claimed_distances = []
+    for ref in claimed_refs:
+        emb = get_face_embedding(ref)
+        if emb is not None:
+            claimed_distances.append(_cosine_distance(captured_emb, emb))
+
+    if not claimed_distances:
+        return True, "separation_skipped_no_claimed_embeddings"
+
+    claimed_min = min(claimed_distances)
+    if claimed_min > EMBEDDING_MATCH_THRESHOLD:
+        return False, f"claimed_distance={claimed_min:.3f}_limit={EMBEDDING_MATCH_THRESHOLD:.3f}"
+
+    other_refs = get_other_students_reference_images(student_name)
+    if not other_refs:
+        return True, f"claimed_distance={claimed_min:.3f}_no_other_gallery"
+
+    other_min = 1.0
+    any_other = False
+    for ref in other_refs:
+        emb = get_face_embedding(ref)
+        if emb is None:
+            continue
+        any_other = True
+        d = _cosine_distance(captured_emb, emb)
+        if d < other_min:
+            other_min = d
+
+    if not any_other:
+        return True, f"claimed_distance={claimed_min:.3f}_no_other_embeddings"
+
+    if claimed_min + EMBEDDING_MARGIN > other_min:
+        return False, (
+            f"identity_conflict(claimed={claimed_min:.3f},other={other_min:.3f},"
+            f"margin={EMBEDDING_MARGIN:.3f})"
+        )
+
+    return True, f"identity_ok(claimed={claimed_min:.3f},other={other_min:.3f})"
+
+
 def verify_with_single_reference(captured_path, reference_path):
     try:
         verify = DeepFace.verify(
             img1_path=captured_path,
             img2_path=reference_path,
-            enforce_detection=False,
+            model_name=DEEPFACE_MODEL_NAME,
+            detector_backend=DEEPFACE_DETECTOR,
+            distance_metric=DEEPFACE_DISTANCE_METRIC,
+            enforce_detection=True,
         )
-        if verify.get("verified", False):
-            return True, "deepface_match"
-    except Exception:
-        pass
+        distance = verify.get("distance")
+        model_threshold = verify.get("threshold")
+        if distance is None:
+            return False, "deepface_no_distance"
 
-    matched, info = verify_face_fallback(captured_path, reference_path)
-    return matched, f"fallback_{info}"
+        effective_threshold = STRICT_MAX_DISTANCE
+        if isinstance(model_threshold, (float, int)):
+            effective_threshold = min(float(model_threshold), STRICT_MAX_DISTANCE)
+
+        deepface_match = verify.get("verified", False) and float(distance) <= effective_threshold
+        if deepface_match:
+            return True, f"deepface_distance={float(distance):.3f}"
+        return False, f"deepface_distance={float(distance):.3f}_limit={effective_threshold:.3f}"
+    except Exception:
+        # If DeepFace model is unavailable (offline), use stricter local fallback.
+        matched, info = verify_face_fallback(captured_path, reference_path)
+        return matched, f"fallback_{info}"
 
 
 def verify_with_student_gallery(captured_path, student_name):
@@ -170,16 +392,30 @@ def verify_with_student_gallery(captured_path, student_name):
             f"Add images in: {folder}"
         )
 
+    if len(refs) < MIN_REFERENCE_PHOTOS:
+        return False, (
+            f"Add at least {MIN_REFERENCE_PHOTOS} reference photos for '{student_name}'. "
+            "Two clear photos are required for secure verification."
+        )
+
     matches = 0
     for ref in refs:
         ok, _ = verify_with_single_reference(captured_path, ref)
         if ok:
             matches += 1
 
-    required = 1 if len(refs) <= 2 else 2
+    if len(refs) == 2:
+        required = 2
+    else:
+        required = max(2, math.ceil(len(refs) * 0.6))
+
     if matches >= required:
-        return True, f"matched {matches}/{len(refs)}"
-    return False, f"matched {matches}/{len(refs)} (required {required})"
+        sep_ok, sep_info = verify_identity_separation(captured_path, student_name, refs)
+        if not sep_ok:
+            return False, sep_info
+        return True, f"matched {matches}/{len(refs)} | {sep_info}"
+
+    return False, "mismatch"
 
 
 def save_uploaded_face(file_storage):
@@ -193,6 +429,32 @@ def save_uploaded_face(file_storage):
     os.makedirs("faces", exist_ok=True)
     captured_path = os.path.join("faces", f"captured_{uuid.uuid4().hex}{ext}")
     file_storage.save(captured_path)
+
+    if not os.path.exists(captured_path) or os.path.getsize(captured_path) == 0:
+        return None, "Could not save captured face image"
+
+    return captured_path, None
+
+
+def save_captured_face_data(face_data):
+    if not face_data:
+        return None, "Capture a face photo"
+
+    if "," in face_data:
+        _, face_data = face_data.split(",", 1)
+
+    try:
+        raw = base64.b64decode(face_data, validate=True)
+    except Exception:
+        return None, "Invalid captured face image"
+
+    if not raw:
+        return None, "Captured face image is empty"
+
+    os.makedirs("faces", exist_ok=True)
+    captured_path = os.path.join("faces", f"captured_{uuid.uuid4().hex}.jpg")
+    with open(captured_path, "wb") as f:
+        f.write(raw)
 
     if not os.path.exists(captured_path) or os.path.getsize(captured_path) == 0:
         return None, "Could not save captured face image"
@@ -292,6 +554,56 @@ def teacher_portal():
     return render_template("teacher.html")
 
 
+@app.route("/teacher/location", methods=["GET", "POST"])
+def teacher_location():
+    settings = get_location_settings()
+
+    if request.method == "POST":
+        campus_name = request.form.get("campus_name", "").strip()
+        subject_name = request.form.get("subject_name", "").strip()
+        lat_raw = request.form.get("class_lat", "").strip()
+        lon_raw = request.form.get("class_lon", "").strip()
+        radius_raw = request.form.get("allowed_radius", "").strip()
+
+        try:
+            class_lat = float(lat_raw)
+            class_lon = float(lon_raw)
+            allowed_radius = float(radius_raw)
+        except ValueError:
+            return render_template(
+                "result.html",
+                message="Invalid location values. Pick a valid point on map and radius.",
+                status="error",
+            )
+
+        if not (-90 <= class_lat <= 90 and -180 <= class_lon <= 180):
+            return render_template(
+                "result.html",
+                message="Invalid coordinates selected on map.",
+                status="error",
+            )
+
+        if allowed_radius <= 0 or allowed_radius > 10:
+            return render_template(
+                "result.html",
+                message="Allowed radius must be between 0 and 10 km.",
+                status="error",
+            )
+
+        save_location_settings(campus_name, subject_name, class_lat, class_lon, allowed_radius)
+        return render_template(
+            "result.html",
+            message="Campus location updated successfully",
+            status="success",
+        )
+
+    return render_template(
+        "teacher_location.html",
+        settings=settings,
+        google_maps_api_key=GOOGLE_MAPS_API_KEY,
+    )
+
+
 @app.route("/teacher/qr")
 def teacher_qr():
     token = str(uuid.uuid4())
@@ -309,17 +621,33 @@ def teacher_qr():
     img = qrcode.make(token)
     img.save("static/qr.png")
 
-    return render_template("teacher_qr.html", expiry=QR_EXPIRY_MINUTES * 60)
+    return render_template(
+        "teacher_qr.html",
+        expiry=QR_EXPIRY_MINUTES * 60,
+        settings=get_location_settings(),
+    )
 
 
 @app.route("/student", methods=["GET", "POST"])
 def student():
+    settings = get_location_settings()
+
     if request.method == "POST":
         token = request.form["token"]
         name = request.form["student_name"].strip()
-        lat = float(request.form["lat"])
-        lon = float(request.form["lon"])
+        lat_raw = request.form.get("lat", "").strip()
+        lon_raw = request.form.get("lon", "").strip()
+        try:
+            lat = float(lat_raw)
+            lon = float(lon_raw)
+        except ValueError:
+            return render_template(
+                "result.html",
+                message="Location not available. Allow location permission and try again.",
+                status="error",
+            )
         uploaded_face = request.files.get("face_photo")
+        captured_face_data = request.form.get("captured_face_data", "").strip()
 
         conn = sqlite3.connect("attendance.db")
         cursor = conn.cursor()
@@ -336,15 +664,32 @@ def student():
             conn.close()
             return render_template("result.html", message="QR Expired", status="error")
 
-        distance = calculate_distance(CLASS_LAT, CLASS_LON, lat, lon)
-        if distance > ALLOWED_RADIUS:
+        distance = calculate_distance(settings["class_lat"], settings["class_lon"], lat, lon)
+        if distance > settings["allowed_radius"]:
             conn.close()
-            return render_template("result.html", message="Outside Classroom", status="error")
+            return render_template(
+                "result.html",
+                message=f"Outside allowed campus area ({settings['campus_name']})",
+                status="error",
+            )
 
-        captured_path, upload_error = save_uploaded_face(uploaded_face)
+        if uploaded_face and uploaded_face.filename:
+            captured_path, upload_error = save_uploaded_face(uploaded_face)
+        else:
+            captured_path, upload_error = save_captured_face_data(captured_face_data)
         if upload_error:
             conn.close()
             return render_template("result.html", message=upload_error, status="error")
+
+        face_count = count_faces_in_image(captured_path)
+        if face_count != 1:
+            conn.close()
+            safe_remove(captured_path)
+            return render_template(
+                "result.html",
+                message="Face not matched",
+                status="error",
+            )
 
         matched, info = verify_with_student_gallery(captured_path, name)
         if not matched:
@@ -368,16 +713,20 @@ def student():
 
         timestamp = str(datetime.datetime.now())
         cursor.execute(
-            "INSERT INTO attendance (student_name, timestamp, session_token) VALUES (?, ?, ?)",
-            (name, timestamp, token),
+            "INSERT INTO attendance (student_name, timestamp, session_token, subject_name) VALUES (?, ?, ?, ?)",
+            (name, timestamp, token, settings["subject_name"]),
         )
         conn.commit()
         conn.close()
         safe_remove(captured_path)
 
-        return render_template("result.html", message="Attendance Marked Successfully", status="success")
+        return render_template(
+            "result.html",
+            message=f"Attendance Marked Successfully for {settings['subject_name']}",
+            status="success",
+        )
 
-    return render_template("student.html")
+    return render_template("student.html", settings=settings)
 
 
 @app.route("/dashboard")

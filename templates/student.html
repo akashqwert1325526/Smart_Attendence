@@ -4,13 +4,28 @@
 
 <div class="container">
     <p style="margin-top:0;">Reference photos folder: <code>faces/students/&lt;student_name&gt;/</code></p>
+    <p>
+        Allowed campus: <strong>{{ settings.campus_name }}</strong> |
+        Subject: <strong>{{ settings.subject_name }}</strong> |
+        Radius: <strong>{{ "%.2f"|format(settings.allowed_radius) }} km</strong>
+    </p>
     <form method="POST" enctype="multipart/form-data">
         <input type="text" name="student_name" placeholder="Enter Name (same as folder)" required><br>
         <input type="text" name="token" placeholder="Enter QR Token" required><br>
-        <input type="file" name="face_photo" accept="image/*" capture="user" required><br>
 
-        <input type="hidden" name="lat" id="lat">
-        <input type="hidden" name="lon" id="lon">
+        <div class="camera-wrap">
+            <video id="cameraPreview" class="camera-preview" autoplay playsinline muted></video>
+            <canvas id="faceCanvas" class="camera-canvas" width="640" height="480" hidden></canvas>
+            <button class="btn" type="button" id="captureFaceBtn">Capture Face</button>
+            <p id="captureStatus" class="capture-status">Camera starting...</p>
+        </div>
+
+        <input type="hidden" name="captured_face_data" id="capturedFaceData">
+
+        <input type="hidden" name="lat" id="lat" value="">
+        <input type="hidden" name="lon" id="lon" value="">
+        <button class="btn" type="button" id="getLocationBtn">Get My Location</button>
+        <p id="locationStatus" class="capture-status">Location: fetching...</p>
 
         <button class="btn" type="submit">Submit Attendance</button>
     </form>
@@ -19,17 +34,121 @@
 </div>
 
 <script>
-navigator.geolocation.getCurrentPosition(function(position){
-    document.getElementById("lat").value=position.coords.latitude;
-    document.getElementById("lon").value=position.coords.longitude;
-});
+const latInput = document.getElementById("lat");
+const lonInput = document.getElementById("lon");
 
 const attendanceForm = document.querySelector("form");
-attendanceForm.addEventListener("submit", function() {
+const cameraPreview = document.getElementById("cameraPreview");
+const faceCanvas = document.getElementById("faceCanvas");
+const capturedFaceData = document.getElementById("capturedFaceData");
+const captureFaceBtn = document.getElementById("captureFaceBtn");
+const getLocationBtn = document.getElementById("getLocationBtn");
+const locationStatus = document.getElementById("locationStatus");
+const captureStatus = document.getElementById("captureStatus");
+let cameraStream = null;
+let pendingSubmit = false;
+
+function fetchLocation(onSuccess) {
+    if (!navigator.geolocation) {
+        locationStatus.textContent = "Location: geolocation not supported.";
+        return;
+    }
+
+    locationStatus.textContent = "Location: fetching...";
+    navigator.geolocation.getCurrentPosition(
+        function(position) {
+            latInput.value = position.coords.latitude.toFixed(8);
+            lonInput.value = position.coords.longitude.toFixed(8);
+            locationStatus.textContent = "Location captured.";
+            if (typeof onSuccess === "function") {
+                onSuccess();
+            }
+        },
+        function() {
+            latInput.value = "";
+            lonInput.value = "";
+            locationStatus.textContent = "Location not available. Allow location permission.";
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
+}
+
+async function startCamera() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        captureStatus.textContent = "Camera not supported in this browser.";
+        return;
+    }
+
+    try {
+        cameraStream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: "user" },
+            audio: false
+        });
+        cameraPreview.srcObject = cameraStream;
+        captureStatus.textContent = "Camera ready. Click Capture Face.";
+    } catch (error) {
+        captureStatus.textContent = "Camera access denied. Allow camera permission and refresh.";
+    }
+}
+
+captureFaceBtn.addEventListener("click", function () {
+    if (!cameraStream) {
+        captureStatus.textContent = "Camera is not ready.";
+        return;
+    }
+
+    const videoWidth = cameraPreview.videoWidth || 640;
+    const videoHeight = cameraPreview.videoHeight || 480;
+    faceCanvas.width = videoWidth;
+    faceCanvas.height = videoHeight;
+
+    const ctx = faceCanvas.getContext("2d");
+
+    // Zoom into center area to reduce background and improve face matching.
+    const cropScale = 0.7;
+    const srcW = Math.floor(videoWidth * cropScale);
+    const srcH = Math.floor(videoHeight * cropScale);
+    const srcX = Math.floor((videoWidth - srcW) / 2);
+    const srcY = Math.floor((videoHeight - srcH) / 2);
+    ctx.drawImage(cameraPreview, srcX, srcY, srcW, srcH, 0, 0, videoWidth, videoHeight);
+
+    capturedFaceData.value = faceCanvas.toDataURL("image/jpeg", 0.92);
+    captureStatus.textContent = "Face captured (center zoom). You can submit attendance.";
+});
+
+attendanceForm.addEventListener("submit", function(event) {
+    if (!latInput.value || !lonInput.value) {
+        event.preventDefault();
+        if (!pendingSubmit) {
+            pendingSubmit = true;
+            fetchLocation(function() {
+                pendingSubmit = false;
+                attendanceForm.requestSubmit();
+            });
+        } else {
+            pendingSubmit = false;
+            captureStatus.textContent = "Location not available. Allow location permission and try again.";
+        }
+        return;
+    }
+
+    if (!capturedFaceData.value) {
+        event.preventDefault();
+        captureStatus.textContent = "Please capture your face before submitting.";
+        return;
+    }
+
     const submitButton = attendanceForm.querySelector('button[type="submit"]');
     submitButton.disabled = true;
     submitButton.textContent = "Submitting...";
 });
+
+getLocationBtn.addEventListener("click", function() {
+    fetchLocation();
+});
+
+fetchLocation();
+startCamera();
 </script>
 
 <footer class="site-footer">&copy; AGR. All rights reserved.</footer>
