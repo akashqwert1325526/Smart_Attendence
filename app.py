@@ -8,8 +8,11 @@ import os
 import re
 import shutil
 import base64
-import cv2
-from deepface import DeepFace
+
+# Lazy-loaded to avoid heavy startup on constrained hosts (e.g. Render free tier).
+cv2 = None
+DeepFace = None
+FACE_LIBS_ERROR = None
 
 app = Flask(__name__)
 
@@ -38,6 +41,24 @@ EMBEDDING_MATCH_THRESHOLD = 0.38
 EMBEDDING_MARGIN = 0.04
 EMBEDDING_CACHE_LIMIT = 4096
 _embedding_cache = {}
+
+
+def ensure_face_libs():
+    global cv2, DeepFace, FACE_LIBS_ERROR
+    if cv2 is not None and DeepFace is not None:
+        return True
+    if FACE_LIBS_ERROR is not None:
+        return False
+    try:
+        import cv2 as _cv2
+        from deepface import DeepFace as _DeepFace
+
+        cv2 = _cv2
+        DeepFace = _DeepFace
+        return True
+    except Exception as exc:
+        FACE_LIBS_ERROR = str(exc)
+        return False
 
 
 def db_connect():
@@ -191,6 +212,8 @@ def save_location_settings(campus_name, subject_name, class_lat, class_lon, allo
 
 
 def _extract_face(gray_img):
+    if not ensure_face_libs():
+        return gray_img
     cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
     cascade = cv2.CascadeClassifier(cascade_path)
     faces = cascade.detectMultiScale(gray_img, scaleFactor=1.1, minNeighbors=4, minSize=(40, 40))
@@ -207,6 +230,10 @@ def _extract_face(gray_img):
 
 
 def count_faces_in_image(img_path):
+    if not ensure_face_libs():
+        # Do not block submission on detector load failure; verification will report clear reason.
+        return 1
+
     deepface_count = 0
     try:
         faces = DeepFace.extract_faces(
@@ -241,6 +268,8 @@ def count_faces_in_image(img_path):
 
 
 def _preprocess_for_compare(img_path):
+    if not ensure_face_libs():
+        return None
     img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
         return None
@@ -252,6 +281,9 @@ def _preprocess_for_compare(img_path):
 
 
 def verify_face_fallback(captured_path, stored_path):
+    if not ensure_face_libs():
+        return False, f"face_libs_unavailable({FACE_LIBS_ERROR or 'unknown'})"
+
     img1 = _preprocess_for_compare(captured_path)
     img2 = _preprocess_for_compare(stored_path)
     if img1 is None or img2 is None:
@@ -328,6 +360,9 @@ def _get_embedding_cache_key(img_path):
 
 
 def get_face_embedding(img_path):
+    if not ensure_face_libs():
+        return None
+
     cache_key = _get_embedding_cache_key(img_path)
     if cache_key is not None and cache_key in _embedding_cache:
         return _embedding_cache[cache_key]
