@@ -24,12 +24,16 @@ QR_EXPIRY_MINUTES = 2
 STUDENT_FACES_DIR = os.path.join("faces", "students")
 ALLOWED_UPLOAD_EXTENSIONS = (".jpg", ".jpeg", ".png")
 DEEPFACE_MODEL_NAME = "Facenet512"
-DEEPFACE_DETECTOR = "retinaface"
+# OpenCV detector is much faster than RetinaFace for realtime attendance checks.
+DEEPFACE_DETECTOR = "opencv"
 DEEPFACE_DISTANCE_METRIC = "cosine"
-STRICT_MAX_DISTANCE = 0.24
+STRICT_MAX_DISTANCE = 0.28
+RELAXED_BEST_DISTANCE = 0.38
 MIN_REFERENCE_PHOTOS = 2
-EMBEDDING_MATCH_THRESHOLD = 0.26
-EMBEDDING_MARGIN = 0.06
+EMBEDDING_MATCH_THRESHOLD = 0.38
+EMBEDDING_MARGIN = 0.04
+EMBEDDING_CACHE_LIMIT = 4096
+_embedding_cache = {}
 
 
 def init_db():
@@ -193,14 +197,37 @@ def _extract_face(gray_img):
 
 
 def count_faces_in_image(img_path):
+    deepface_count = 0
+    try:
+        faces = DeepFace.extract_faces(
+            img_path=img_path,
+            detector_backend=DEEPFACE_DETECTOR,
+            enforce_detection=False,
+            align=True,
+        )
+        if isinstance(faces, list) and faces:
+            deepface_count = len(faces)
+    except Exception:
+        deepface_count = 0
+
     img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
-        return 0
+        return deepface_count
 
     cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
     cascade = cv2.CascadeClassifier(cascade_path)
-    faces = cascade.detectMultiScale(img, scaleFactor=1.1, minNeighbors=4, minSize=(40, 40))
-    return len(faces)
+    faces = cascade.detectMultiScale(img, scaleFactor=1.1, minNeighbors=6, minSize=(50, 50))
+    opencv_count = len(faces)
+
+    # Reduce false "multiple faces" rejections:
+    # block only when both detectors strongly indicate multiple people.
+    if opencv_count > 1 and deepface_count > 1:
+        return max(opencv_count, deepface_count)
+    if opencv_count == 1 or deepface_count == 1:
+        return 1
+    if opencv_count > 1 or deepface_count > 1:
+        return 1
+    return 0
 
 
 def _preprocess_for_compare(img_path):
@@ -276,13 +303,32 @@ def _cosine_distance(vec1, vec2):
     return 1.0 - cosine_sim
 
 
+def _get_embedding_cache_key(img_path):
+    try:
+        stat = os.stat(img_path)
+    except OSError:
+        return None
+    return (
+        os.path.abspath(img_path),
+        stat.st_mtime_ns,
+        stat.st_size,
+        DEEPFACE_MODEL_NAME,
+        DEEPFACE_DETECTOR,
+    )
+
+
 def get_face_embedding(img_path):
+    cache_key = _get_embedding_cache_key(img_path)
+    if cache_key is not None and cache_key in _embedding_cache:
+        return _embedding_cache[cache_key]
+
     try:
         reps = DeepFace.represent(
             img_path=img_path,
             model_name=DEEPFACE_MODEL_NAME,
             detector_backend=DEEPFACE_DETECTOR,
-            enforce_detection=True,
+            enforce_detection=False,
+            align=True,
         )
     except Exception:
         return None
@@ -290,6 +336,10 @@ def get_face_embedding(img_path):
     if isinstance(reps, list) and reps:
         emb = reps[0].get("embedding")
         if isinstance(emb, list) and emb:
+            if cache_key is not None:
+                if len(_embedding_cache) >= EMBEDDING_CACHE_LIMIT:
+                    _embedding_cache.clear()
+                _embedding_cache[cache_key] = emb
             return emb
     return None
 
@@ -355,33 +405,20 @@ def verify_identity_separation(captured_path, student_name, claimed_refs):
     return True, f"identity_ok(claimed={claimed_min:.3f},other={other_min:.3f})"
 
 
-def verify_with_single_reference(captured_path, reference_path):
-    try:
-        verify = DeepFace.verify(
-            img1_path=captured_path,
-            img2_path=reference_path,
-            model_name=DEEPFACE_MODEL_NAME,
-            detector_backend=DEEPFACE_DETECTOR,
-            distance_metric=DEEPFACE_DISTANCE_METRIC,
-            enforce_detection=True,
-        )
-        distance = verify.get("distance")
-        model_threshold = verify.get("threshold")
-        if distance is None:
-            return False, "deepface_no_distance"
+def verify_with_single_reference(captured_path, reference_path, captured_emb=None):
+    if captured_emb is None:
+        captured_emb = get_face_embedding(captured_path)
+    ref_emb = get_face_embedding(reference_path)
 
-        effective_threshold = STRICT_MAX_DISTANCE
-        if isinstance(model_threshold, (float, int)):
-            effective_threshold = min(float(model_threshold), STRICT_MAX_DISTANCE)
+    if captured_emb is not None and ref_emb is not None:
+        distance = _cosine_distance(captured_emb, ref_emb)
+        if distance <= STRICT_MAX_DISTANCE:
+            return True, f"deepface_distance={distance:.3f}"
+        return False, f"deepface_distance={distance:.3f}_limit={STRICT_MAX_DISTANCE:.3f}"
 
-        deepface_match = verify.get("verified", False) and float(distance) <= effective_threshold
-        if deepface_match:
-            return True, f"deepface_distance={float(distance):.3f}"
-        return False, f"deepface_distance={float(distance):.3f}_limit={effective_threshold:.3f}"
-    except Exception:
-        # If DeepFace model is unavailable (offline), use stricter local fallback.
-        matched, info = verify_face_fallback(captured_path, reference_path)
-        return matched, f"fallback_{info}"
+    # If DeepFace embedding is unavailable, use stricter local fallback.
+    matched, info = verify_face_fallback(captured_path, reference_path)
+    return matched, f"fallback_{info}"
 
 
 def verify_with_student_gallery(captured_path, student_name):
@@ -398,23 +435,40 @@ def verify_with_student_gallery(captured_path, student_name):
             "Two clear photos are required for secure verification."
         )
 
+    captured_emb = get_face_embedding(captured_path)
     matches = 0
+    best_distance = None
     for ref in refs:
-        ok, _ = verify_with_single_reference(captured_path, ref)
-        if ok:
-            matches += 1
+        ref_emb = get_face_embedding(ref)
+        if captured_emb is not None and ref_emb is not None:
+            distance = _cosine_distance(captured_emb, ref_emb)
+            if best_distance is None or distance < best_distance:
+                best_distance = distance
+            if distance <= STRICT_MAX_DISTANCE:
+                matches += 1
+        else:
+            ok, _ = verify_with_single_reference(captured_path, ref, captured_emb=captured_emb)
+            if ok:
+                matches += 1
 
-    if len(refs) == 2:
-        required = 2
-    else:
-        required = max(2, math.ceil(len(refs) * 0.6))
+    required = 1 if len(refs) <= 3 else 2
+    qualifies = matches >= required
+    if not qualifies and best_distance is not None and best_distance <= RELAXED_BEST_DISTANCE:
+        qualifies = True
 
-    if matches >= required:
+    if qualifies:
         sep_ok, sep_info = verify_identity_separation(captured_path, student_name, refs)
         if not sep_ok:
             return False, sep_info
-        return True, f"matched {matches}/{len(refs)} | {sep_info}"
+        if best_distance is None:
+            return True, f"matched {matches}/{len(refs)} | {sep_info}"
+        return True, f"matched {matches}/{len(refs)} best={best_distance:.3f} | {sep_info}"
 
+    if best_distance is not None:
+        return False, (
+            f"mismatch_best_distance={best_distance:.3f}_"
+            f"strict={STRICT_MAX_DISTANCE:.3f}_relaxed={RELAXED_BEST_DISTANCE:.3f}"
+        )
     return False, "mismatch"
 
 
@@ -682,12 +736,21 @@ def student():
             return render_template("result.html", message=upload_error, status="error")
 
         face_count = count_faces_in_image(captured_path)
-        if face_count != 1:
+        if face_count == 0:
             conn.close()
             safe_remove(captured_path)
             return render_template(
                 "result.html",
-                message="Face not matched",
+                message="Face not detected clearly. Keep one face in frame and recapture.",
+                status="error",
+            )
+
+        if face_count > 1:
+            conn.close()
+            safe_remove(captured_path)
+            return render_template(
+                "result.html",
+                message="Multiple faces detected. Ensure only your face is visible.",
                 status="error",
             )
 
@@ -729,16 +792,6 @@ def student():
     return render_template("student.html", settings=settings)
 
 
-@app.route("/dashboard")
-def dashboard():
-    conn = sqlite3.connect("attendance.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT student_name, COUNT(*) FROM attendance GROUP BY student_name")
-    data = cursor.fetchall()
-    conn.close()
-    return render_template("dashboard.html", data=data)
-
-
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="127.0.0.1", port=5000, debug=False, use_reloader=False)
 

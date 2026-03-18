@@ -104,16 +104,11 @@ captureFaceBtn.addEventListener("click", function () {
 
     const ctx = faceCanvas.getContext("2d");
 
-    // Zoom into center area to reduce background and improve face matching.
-    const cropScale = 0.7;
-    const srcW = Math.floor(videoWidth * cropScale);
-    const srcH = Math.floor(videoHeight * cropScale);
-    const srcX = Math.floor((videoWidth - srcW) / 2);
-    const srcY = Math.floor((videoHeight - srcH) / 2);
-    ctx.drawImage(cameraPreview, srcX, srcY, srcW, srcH, 0, 0, videoWidth, videoHeight);
+    // Capture full frame to avoid losing face details due aggressive cropping.
+    ctx.drawImage(cameraPreview, 0, 0, videoWidth, videoHeight, 0, 0, videoWidth, videoHeight);
 
     capturedFaceData.value = faceCanvas.toDataURL("image/jpeg", 0.92);
-    captureStatus.textContent = "Face captured (center zoom). You can submit attendance.";
+    captureStatus.textContent = "Face captured. You can submit attendance.";
 });
 
 attendanceForm.addEventListener("submit", function(event) {
