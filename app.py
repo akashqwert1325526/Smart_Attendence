@@ -14,6 +14,10 @@ from deepface import DeepFace
 app = Flask(__name__)
 
 # CONFIG
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "attendance.db")
+FACES_DIR = os.path.join(BASE_DIR, "faces")
+STATIC_DIR = os.path.join(BASE_DIR, "static")
 DEFAULT_CLASS_LAT = 12.9690516
 DEFAULT_CLASS_LON = 77.7110380
 DEFAULT_ALLOWED_RADIUS = 0.5  # 500 meters (distance is in KM)
@@ -21,7 +25,7 @@ DEFAULT_CAMPUS_NAME = "Main Campus"
 DEFAULT_SUBJECT_NAME = "General"
 GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "")
 QR_EXPIRY_MINUTES = 2
-STUDENT_FACES_DIR = os.path.join("faces", "students")
+STUDENT_FACES_DIR = os.path.join(FACES_DIR, "students")
 ALLOWED_UPLOAD_EXTENSIONS = (".jpg", ".jpeg", ".png")
 DEEPFACE_MODEL_NAME = "Facenet512"
 # OpenCV detector is much faster than RetinaFace for realtime attendance checks.
@@ -36,8 +40,14 @@ EMBEDDING_CACHE_LIMIT = 4096
 _embedding_cache = {}
 
 
+def db_connect():
+    return sqlite3.connect(DB_PATH)
+
+
 def init_db():
-    conn = sqlite3.connect("attendance.db")
+    os.makedirs(FACES_DIR, exist_ok=True)
+    os.makedirs(STATIC_DIR, exist_ok=True)
+    conn = db_connect()
     cursor = conn.cursor()
 
     cursor.execute(
@@ -130,7 +140,7 @@ def calculate_distance(lat1, lon1, lat2, lon2):
 
 
 def get_location_settings():
-    conn = sqlite3.connect("attendance.db")
+    conn = db_connect()
     cursor = conn.cursor()
     cursor.execute(
         "SELECT campus_name, subject_name, class_lat, class_lon, allowed_radius FROM location_settings WHERE id=1"
@@ -159,7 +169,7 @@ def get_location_settings():
 def save_location_settings(campus_name, subject_name, class_lat, class_lon, allowed_radius):
     safe_name = campus_name.strip() or DEFAULT_CAMPUS_NAME
     safe_subject = subject_name.strip() or DEFAULT_SUBJECT_NAME
-    conn = sqlite3.connect("attendance.db")
+    conn = db_connect()
     cursor = conn.cursor()
     cursor.execute(
         """
@@ -480,8 +490,8 @@ def save_uploaded_face(file_storage):
     if ext not in ALLOWED_UPLOAD_EXTENSIONS:
         return None, "Only .jpg, .jpeg, and .png are allowed"
 
-    os.makedirs("faces", exist_ok=True)
-    captured_path = os.path.join("faces", f"captured_{uuid.uuid4().hex}{ext}")
+    os.makedirs(FACES_DIR, exist_ok=True)
+    captured_path = os.path.join(FACES_DIR, f"captured_{uuid.uuid4().hex}{ext}")
     file_storage.save(captured_path)
 
     if not os.path.exists(captured_path) or os.path.getsize(captured_path) == 0:
@@ -505,8 +515,8 @@ def save_captured_face_data(face_data):
     if not raw:
         return None, "Captured face image is empty"
 
-    os.makedirs("faces", exist_ok=True)
-    captured_path = os.path.join("faces", f"captured_{uuid.uuid4().hex}.jpg")
+    os.makedirs(FACES_DIR, exist_ok=True)
+    captured_path = os.path.join(FACES_DIR, f"captured_{uuid.uuid4().hex}.jpg")
     with open(captured_path, "wb") as f:
         f.write(raw)
 
@@ -663,17 +673,17 @@ def teacher_qr():
     token = str(uuid.uuid4())
     expiry = datetime.datetime.now() + datetime.timedelta(minutes=QR_EXPIRY_MINUTES)
 
-    conn = sqlite3.connect("attendance.db")
+    conn = db_connect()
     cursor = conn.cursor()
     cursor.execute("INSERT INTO sessions (token, expiry) VALUES (?, ?)", (token, str(expiry)))
     conn.commit()
     conn.close()
 
-    if not os.path.exists("static"):
-        os.makedirs("static")
+    if not os.path.exists(STATIC_DIR):
+        os.makedirs(STATIC_DIR)
 
     img = qrcode.make(token)
-    img.save("static/qr.png")
+    img.save(os.path.join(STATIC_DIR, "qr.png"))
 
     return render_template(
         "teacher_qr.html",
@@ -703,7 +713,7 @@ def student():
         uploaded_face = request.files.get("face_photo")
         captured_face_data = request.form.get("captured_face_data", "").strip()
 
-        conn = sqlite3.connect("attendance.db")
+        conn = db_connect()
         cursor = conn.cursor()
 
         cursor.execute("SELECT expiry FROM sessions WHERE token=?", (token,))
