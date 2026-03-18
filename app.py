@@ -8,8 +8,18 @@ import os
 import re
 import shutil
 import base64
-import cv2
-from deepface import DeepFace
+from PIL import Image
+import numpy as np
+
+try:
+    import cv2
+except Exception:
+    cv2 = None
+
+try:
+    from deepface import DeepFace
+except Exception:
+    DeepFace = None
 
 app = Flask(__name__)
 
@@ -181,6 +191,8 @@ def save_location_settings(campus_name, subject_name, class_lat, class_lon, allo
 
 
 def _extract_face(gray_img):
+    if cv2 is None:
+        return gray_img
     cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
     cascade = cv2.CascadeClassifier(cascade_path)
     faces = cascade.detectMultiScale(gray_img, scaleFactor=1.1, minNeighbors=4, minSize=(40, 40))
@@ -197,8 +209,14 @@ def _extract_face(gray_img):
 
 
 def count_faces_in_image(img_path):
+    if cv2 is None and DeepFace is None:
+        # Lightweight/serverless fallback: skip hard face-count gating.
+        return 1
+
     deepface_count = 0
     try:
+        if DeepFace is None:
+            raise RuntimeError("DeepFace unavailable")
         faces = DeepFace.extract_faces(
             img_path=img_path,
             detector_backend=DEEPFACE_DETECTOR,
@@ -209,6 +227,9 @@ def count_faces_in_image(img_path):
             deepface_count = len(faces)
     except Exception:
         deepface_count = 0
+
+    if cv2 is None:
+        return deepface_count if deepface_count > 0 else 1
 
     img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
@@ -231,14 +252,23 @@ def count_faces_in_image(img_path):
 
 
 def _preprocess_for_compare(img_path):
-    img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-    if img is None:
-        return None
+    if cv2 is not None:
+        img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            return None
 
-    face = _extract_face(img)
-    face = cv2.resize(face, (256, 256), interpolation=cv2.INTER_AREA)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    return clahe.apply(face)
+        face = _extract_face(img)
+        face = cv2.resize(face, (256, 256), interpolation=cv2.INTER_AREA)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        return clahe.apply(face)
+
+    try:
+        with Image.open(img_path) as im:
+            gray = im.convert("L").resize((256, 256))
+            arr = np.asarray(gray, dtype=np.float32)
+        return arr
+    except Exception:
+        return None
 
 
 def verify_face_fallback(captured_path, stored_path):
@@ -246,6 +276,16 @@ def verify_face_fallback(captured_path, stored_path):
     img2 = _preprocess_for_compare(stored_path)
     if img1 is None or img2 is None:
         return False, "Could not read one or both face images"
+
+    if cv2 is None:
+        h1, _ = np.histogram(img1.flatten(), bins=64, range=(0, 255), density=True)
+        h2, _ = np.histogram(img2.flatten(), bins=64, range=(0, 255), density=True)
+        denom = np.linalg.norm(h1) * np.linalg.norm(h2)
+        if denom == 0:
+            return False, "No usable fallback features"
+        sim = float(np.dot(h1, h2) / denom)
+        matched = sim >= 0.85
+        return matched, f"simple_hist_similarity={sim:.3f}"
 
     orb = cv2.ORB_create(1200)
     kp1, des1 = orb.detectAndCompute(img1, None)
@@ -318,6 +358,8 @@ def _get_embedding_cache_key(img_path):
 
 
 def get_face_embedding(img_path):
+    if DeepFace is None:
+        return None
     cache_key = _get_embedding_cache_key(img_path)
     if cache_key is not None and cache_key in _embedding_cache:
         return _embedding_cache[cache_key]
