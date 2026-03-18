@@ -48,7 +48,7 @@ const captureStatus = document.getElementById("captureStatus");
 let cameraStream = null;
 let pendingSubmit = false;
 
-function fetchLocation(onSuccess) {
+function fetchLocation(onSuccess, onFailure) {
     if (!navigator.geolocation) {
         locationStatus.textContent = "Location: geolocation not supported.";
         return;
@@ -68,6 +68,9 @@ function fetchLocation(onSuccess) {
             latInput.value = "";
             lonInput.value = "";
             locationStatus.textContent = "Location not available. Allow location permission.";
+            if (typeof onFailure === "function") {
+                onFailure();
+            }
         },
         { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
     );
@@ -118,11 +121,16 @@ attendanceForm.addEventListener("submit", function(event) {
             pendingSubmit = true;
             fetchLocation(function() {
                 pendingSubmit = false;
-                attendanceForm.requestSubmit();
+                if (typeof attendanceForm.requestSubmit === "function") {
+                    attendanceForm.requestSubmit();
+                } else {
+                    attendanceForm.submit();
+                }
+            }, function() {
+                pendingSubmit = false;
+                captureStatus.textContent = "Location not available. Allow location permission and try again.";
+                alert("Please allow location permission, then submit again.");
             });
-        } else {
-            pendingSubmit = false;
-            captureStatus.textContent = "Location not available. Allow location permission and try again.";
         }
         return;
     }
@@ -130,6 +138,7 @@ attendanceForm.addEventListener("submit", function(event) {
     if (!capturedFaceData.value) {
         event.preventDefault();
         captureStatus.textContent = "Please capture your face before submitting.";
+        alert("Please click 'Capture Face' before submitting.");
         return;
     }
 
